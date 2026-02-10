@@ -266,6 +266,7 @@ Examples:
 
     parser.add_argument("--add", metavar="URL", help="Add a new subscription")
     parser.add_argument("--update", action="store_true", help="Update all subscriptions")
+    parser.add_argument("--status", action="store_true", help="Read cached report (for bot push, no fetching)")
     parser.add_argument("--list", action="store_true", help="List all subscriptions")
     parser.add_argument("--stats", action="store_true", help="Show statistics")
     parser.add_argument("--no-llm", action="store_true", help="Disable LLM classification")
@@ -275,8 +276,18 @@ Examples:
     args = parser.parse_args()
 
     # Check if any action specified
-    if not any([args.add, args.update, args.list, args.stats]):
+    if not any([args.add, args.update, args.status, args.list, args.stats]):
         parser.print_help()
+        return
+
+    # --status is a fast path: just read cached file, no engine needed
+    if args.status:
+        report_path = os.path.join(os.path.dirname(db_path or args.db) or ".", "latest_update.md")
+        if os.path.exists(report_path):
+            with open(report_path, "r", encoding="utf-8") as f:
+                print(f.read())
+        else:
+            print("⚠️ 尚无缓存报告。请先运行 --update 生成。")
         return
 
     # Initialize engine
