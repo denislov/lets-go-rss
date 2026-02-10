@@ -6,6 +6,7 @@ Tracks fetched items to support incremental updates
 import sqlite3
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 import json
 
 
@@ -93,12 +94,31 @@ class RSSDatabase:
             cursor.execute("SELECT 1 FROM items WHERE item_id = ?", (item_id,))
             return cursor.fetchone() is not None
 
+    @staticmethod
+    def _normalize_date(date_str: Optional[str]) -> str:
+        """Normalize any date format to ISO 8601 (YYYY-MM-DDTHH:MM:SS)."""
+        if not date_str:
+            return datetime.now().isoformat()
+        # Already ISO 8601?
+        if 'T' in date_str or (len(date_str) >= 10 and date_str[4] == '-'):
+            return date_str
+        # Try RFC 822 (e.g. 'Fri, 29 Aug 2025 05:08:39 GMT')
+        try:
+            dt = parsedate_to_datetime(date_str)
+            return dt.isoformat()
+        except Exception:
+            pass
+        # Fallback: store as-is
+        return date_str
+
     def add_item(self, item_id: str, subscription_id: int, title: str,
                  description: str = "", link: str = "", category: str = "",
                  pub_date: Optional[str] = None, metadata: Optional[Dict] = None) -> bool:
         """Add a new item if it doesn't exist"""
         if self.item_exists(item_id):
             return False
+
+        normalized_date = self._normalize_date(pub_date)
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -107,7 +127,7 @@ class RSSDatabase:
                                    link, category, pub_date, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (item_id, subscription_id, title, description, link, category,
-                  pub_date or datetime.now().isoformat(),
+                  normalized_date,
                   json.dumps(metadata) if metadata else None))
             conn.commit()
             return True
@@ -147,6 +167,25 @@ class RSSDatabase:
                 WHERE i.fetched_at >= ?
                 ORDER BY i.category, i.pub_date DESC
             """, (since,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_latest_per_subscription(self) -> list:
+        """Get the single latest item for each subscription, sorted by pub_date DESC."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT i.*, s.platform, s.url as subscription_url
+                FROM items i
+                JOIN subscriptions s ON i.subscription_id = s.id
+                WHERE i.id = (
+                    SELECT i2.id FROM items i2
+                    WHERE i2.subscription_id = i.subscription_id
+                    ORDER BY i2.pub_date DESC
+                    LIMIT 1
+                )
+                ORDER BY i.pub_date DESC
+            """)
             return [dict(row) for row in cursor.fetchall()]
 
     def update_subscription_timestamp(self, subscription_id: int):
