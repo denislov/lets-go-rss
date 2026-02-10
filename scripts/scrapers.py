@@ -38,7 +38,7 @@ class BaseScraper:
             "Accept-Language": "en-US,en;q=0.5",
             "Connection": "keep-alive",
         }
-        self.timeout = 30
+        self.timeout = 15
 
     def get(self, url: str, headers: Optional[Dict] = None) -> httpx.Response:
         """Make GET request with retry logic"""
@@ -277,7 +277,7 @@ class YouTubeScraper(BaseScraper):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=30,
             )
 
             if result.returncode != 0:

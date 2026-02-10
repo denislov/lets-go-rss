@@ -7,8 +7,10 @@ A powerful RSS aggregator with AI-powered categorization
 import argparse
 import sys
 import os
+import time
 from datetime import datetime
 from typing import List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from database import RSSDatabase
 from scrapers import ScraperFactory
@@ -63,7 +65,7 @@ class RSSEngine:
             return True
 
     def update_all(self, use_classification: bool = True, digest: bool = False) -> Dict[str, Any]:
-        """Update all subscriptions"""
+        """Update all subscriptions in parallel."""
         print("\n🔄 Starting RSS update...")
 
         subscriptions = self.db.get_subscriptions()
@@ -72,61 +74,63 @@ class RSSEngine:
             print("⚠️  No subscriptions found. Use --add to add subscriptions first.")
             return {"new_items": [], "total_subscriptions": 0}
 
-        print(f"📋 Found {len(subscriptions)} active subscriptions\n")
+        print(f"📋 Found {len(subscriptions)} active subscriptions")
+        print(f"⚡ Fetching in parallel...\n")
 
         # Track update start time
         update_start = datetime.now().isoformat()
-        new_items_count = 0
+        t0 = time.time()
         all_new_items = []
+        results = {}  # sub_id -> (count, error)
 
-        # Process each subscription
-        for i, sub in enumerate(subscriptions, 1):
-            sub_id = sub["id"]
-            url = sub["url"]
-            platform = sub["platform"]
-            title = sub.get("title", url)
+        # Parallel fetch all subscriptions
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_sub = {}
+            for sub in subscriptions:
+                future = executor.submit(
+                    self._fetch_subscription,
+                    sub["id"], sub["url"], sub["platform"], use_classification
+                )
+                future_to_sub[future] = sub
 
-            print(f"[{i}/{len(subscriptions)}] {platform.title()}: {title}")
+            for future in as_completed(future_to_sub):
+                sub = future_to_sub[future]
+                platform = sub["platform"].title()
+                try:
+                    new_items = future.result(timeout=30)
+                    if new_items:
+                        all_new_items.extend(new_items)
+                        results[sub["id"]] = (len(new_items), None)
+                        print(f"  ✓ {platform}: +{len(new_items)} new")
+                    else:
+                        results[sub["id"]] = (0, None)
+                        print(f"  → {platform}: no new items")
+                    self.db.update_subscription_timestamp(sub["id"])
+                except Exception as e:
+                    results[sub["id"]] = (0, str(e))
+                    print(f"  ❌ {platform}: {str(e)[:60]}")
 
-            try:
-                new_items = self._fetch_subscription(sub_id, url, platform, use_classification)
-                if new_items:
-                    new_items_count += len(new_items)
-                    all_new_items.extend(new_items)
-                    print(f"  ✓ Added {len(new_items)} new items")
-                else:
-                    print(f"  → No new items")
-
-                # Update subscription timestamp
-                self.db.update_subscription_timestamp(sub_id)
-
-            except Exception as e:
-                print(f"  ❌ Error: {e}")
-
-            print()
-
-        print(f"✅ Update complete! Added {new_items_count} new items\n")
+        elapsed = time.time() - t0
+        total_new = sum(r[0] for r in results.values())
+        errors = sum(1 for r in results.values() if r[1])
+        print(f"\n✅ Done in {elapsed:.1f}s | +{total_new} new | {errors} errors\n")
 
         # Generate RSS feeds
-        print("📝 Generating RSS feeds...")
+        print("📝 Generating outputs...")
         all_items = self.db.get_all_items()
         feed_paths = self.rss_generator.create_categorized_feeds(all_items, ".")
-        print(f"✓ Generated {len(feed_paths)} RSS feeds")
+        print(f"✓ {len(feed_paths)} RSS feeds")
 
-        # Generate OPML
         opml_gen = OPMLGenerator()
         opml_gen.create_opml(subscriptions, "subscriptions.opml")
-        print("✓ Generated OPML file")
+        print("✓ OPML")
 
-        # Generate markdown report
-        print("\n📊 Generating update report...")
         new_items_with_details = self.db.get_new_items_since(update_start)
         self.report_generator.generate_update_report(new_items_with_details, "latest_update.md", digest=digest)
-        print("✓ Generated latest_update.md")
+        print("✓ latest_update.md")
 
-        # Generate summary report
         self.report_generator.generate_summary_report(self.db, "summary.md")
-        print("✓ Generated summary.md")
+        print("✓ summary.md")
 
         return {
             "new_items": all_new_items,
