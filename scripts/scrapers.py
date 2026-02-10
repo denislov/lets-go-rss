@@ -257,12 +257,20 @@ class YouTubeScraper(BaseScraper):
 
         print(f"    📡 yt-dlp: {videos_url}")
 
+        # Use --print to get structured fields including upload_date
+        # --flat-playlist + --dump-json does NOT include upload_date
+        SEPARATOR = "|||"
+        PRINT_FORMAT = SEPARATOR.join([
+            "%(id)s", "%(title)s", "%(upload_date)s",
+            "%(duration)s", "%(view_count)s", "%(channel)s",
+            "%(description).500s",
+        ])
+
         try:
             result = subprocess.run(
                 [
                     "yt-dlp",
-                    "--flat-playlist",
-                    "--dump-json",
+                    "--print", PRINT_FORMAT,
                     "--playlist-items", "1:15",
                     "--no-warnings",
                     videos_url,
@@ -278,41 +286,44 @@ class YouTubeScraper(BaseScraper):
 
             items = []
             for line in result.stdout.strip().split("\n"):
-                if not line:
+                if not line or SEPARATOR not in line:
                     continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
+                parts = line.split(SEPARATOR, 6)
+                if len(parts) < 6:
                     continue
 
-                video_id = data.get("id", "")
-                title = data.get("title", f"YouTube Video {video_id}")
-                description = data.get("description", "")
-                duration = data.get("duration", 0)
-                view_count = data.get("view_count", 0)
+                video_id, title, upload_date, duration, view_count, channel = parts[:6]
+                description = parts[6] if len(parts) > 6 else ""
 
-                # Format pub_date from epoch if available
+                # Parse upload_date (format: YYYYMMDD)
                 pub_date = ""
-                if data.get("timestamp"):
-                    pub_date = datetime.fromtimestamp(data["timestamp"]).isoformat()
-                elif data.get("upload_date"):
+                if upload_date and upload_date != "NA":
                     try:
-                        pub_date = datetime.strptime(data["upload_date"], "%Y%m%d").isoformat()
+                        pub_date = datetime.strptime(upload_date, "%Y%m%d").isoformat()
                     except ValueError:
                         pass
+
+                # Parse numeric fields safely
+                try:
+                    duration_int = int(duration) if duration and duration != "NA" else 0
+                except ValueError:
+                    duration_int = 0
+                try:
+                    view_int = int(view_count) if view_count and view_count != "NA" else 0
+                except ValueError:
+                    view_int = 0
 
                 items.append({
                     "item_id": f"youtube_{video_id}",
                     "title": title,
-                    "description": description[:500] if description else "",
+                    "description": description,
                     "link": f"https://www.youtube.com/watch?v={video_id}",
                     "pub_date": pub_date,
                     "metadata": {
                         "video_id": video_id,
-                        "duration": duration,
-                        "duration_string": data.get("duration_string", ""),
-                        "view_count": view_count,
-                        "channel": data.get("channel", data.get("uploader", "")),
+                        "duration": duration_int,
+                        "view_count": view_int,
+                        "channel": channel,
                     }
                 })
 
