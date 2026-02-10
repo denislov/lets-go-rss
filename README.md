@@ -8,6 +8,59 @@ A lightweight RSS aggregator designed to work as a **Claude Skill** inside AI-po
 
 ---
 
+## 💡 Why This Project? | 为什么做这个？
+
+### The Problem | 问题
+
+We are trapped inside algorithms. The average internet user spends **2 hours 23 minutes per day** on social media (DataReportal 2024), of which **80-90% is passive zombie scrolling**. Research from UPenn shows that only **30 minutes** of daily social media use is genuinely beneficial — every second beyond that has diminishing or even negative returns.
+
+我们被困在算法里。全球网民平均每天花 **2 小时 23 分钟**刷社交媒体（DataReportal 2024），其中 **80-90%** 是无意识被动浏览。宾夕法尼亚大学研究表明，每天社交媒体使用超过 **30 分钟**后的每一秒，边际效益都在递减甚至变为负值。
+
+### The Science | 科学依据
+
+- **Dunbar's Number (150)** — Oxford anthropologist Robin Dunbar proved that humans can maintain at most ~150 stable relationships. Indiana University's analysis of Twitter confirmed: even users following thousands of accounts only actively interact with **100-200 people**. Following more than 150 accounts means you're consuming data streams, not maintaining relationships.
+
+- **Miller's Law (7±2)** — Cognitive psychology tells us our working memory holds ~7 items. The brain can deeply process only **5-9 quality sources per day**. Hundreds of subscriptions trigger decision fatigue, forcing your brain into shallow scanning mode.
+
+- **邓巴数（150）**—— 牛津大学人类学家邓巴证明，人类最多维持约 150 段稳定社交关系。印第安纳大学对 Twitter 的大数据分析确认：即使关注数千人，活跃互动圈依然卡在 **100-200 人**。超过 150 个关注，你消费的是数据流，而非社交关系。
+
+- **米勒定律（7±2）**—— 认知心理学表明，短时记忆容量约 7 个单位。大脑每天能深度消化的高质量信源通常不超过 **5-9 个**。关注几百个账号的结果是"决策疲劳"，大脑放弃深度处理，转为浅层扫描。
+
+### The Coming Storm | 即将到来的风暴
+
+With AIGC's marginal cost approaching zero, the internet is heading toward a reality where **90%+ of content is AI-generated**. The "Dead Internet Theory" is becoming fact. Social platforms are splitting from "Social Media" into "Recommendation Media" — AI feeds content, humans secrete dopamine. Real human connection is retreating into private, verified circles (**Dark Forest socialization**).
+
+随着 AIGC 边际成本趋零，互联网正走向 **90% 以上内容由 AI 生成**的现实。"死互联网理论"正在成真。社交平台正从"社交媒体"裂变为"推荐媒体"——AI 负责投喂，人类负责分泌多巴胺。真人社交正撤退至私密的、经过验证的小圈子（**黑暗森林化**）。
+
+### The Solution | 解决方案
+
+**Take back control.** Stop handing your attention to "guess what you like" algorithms. Build your own information moat:
+
+**夺回控制权。** 别再把注意力交给"猜你喜欢"。建立你自己的信息护城河：
+
+> 🎯 Curate ≤150 accounts → 📡 Let RSS pull updates → 🤖 Let AI filter noise → ☕ Reclaim your 2 hours
+>
+> 🎯 精选 ≤150 个关注 → 📡 让 RSS 拉取更新 → 🤖 让 AI 过滤噪音 → ☕ 夺回你的 2 小时
+
+**From FOMO to JOMO** — embrace the joy of missing out. 99% of information is noise. Your attention is the last scarce resource in the age of AI.
+
+**从 FOMO 到 JOMO** —— 拥抱「错过的快乐」。99% 的信息都是噪音。在 AI 时代，你的注意力是最后的稀缺资源。
+
+<details>
+<summary>📚 References | 参考文献</summary>
+
+1. Dunbar, R. I. M. (1992). *Neocortex size as a constraint on group size in primates.* Journal of Human Evolution, 22(6), 469–493.
+2. Gonçalves, B., Perra, N., & Vespignani, A. (2011). *Modeling Users' Activity on Twitter Networks: Validation of Dunbar's Number.* PLoS ONE, 6(8), e22656. (Indiana University)
+3. Miller, G. A. (1956). *The Magical Number Seven, Plus or Minus Two.* Psychological Review, 63(2), 81–97.
+4. Hunt, M. G., Marx, R., Lipson, C., & Young, J. (2018). *No More FOMO: Limiting Social Media Decreases Loneliness and Depression.* Journal of Social and Clinical Psychology, 37(10), 751–768. (UPenn)
+5. Kemp, S. (2024). *Digital 2024: Global Overview Report.* DataReportal / We Are Social / Meltwater.
+6. GWI (2024). *Social Media Trends Report.* GlobalWebIndex.
+
+</details>
+
+---
+
+
 ## 🤖 Designed for AI IDEs | 为 AI IDE 设计
 
 This Skill is built to be used with AI-powered coding environments:
