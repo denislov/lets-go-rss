@@ -68,11 +68,14 @@ class MarkdownReportGenerator:
             emoji = self.platform_emojis.get(platform, "🔗")
             title = item.get("title", "Untitled")
             link = item.get("link", "")
+            # Show account name if available
+            sub_title = item.get("subscription_title", "")
+            account = f"**{sub_title}** " if sub_title and "Subscription" not in sub_title else ""
 
             if link:
-                lines.append(f"- {emoji} [{title}]({link})")
+                lines.append(f"- {emoji} {account}[{title}]({link})")
             else:
-                lines.append(f"- {emoji} {title}")
+                lines.append(f"- {emoji} {account}{title}")
 
         lines.append("")
         lines.append("---")

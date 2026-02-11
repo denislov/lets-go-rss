@@ -175,7 +175,7 @@ class RSSDatabase:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT i.*, s.platform, s.url as subscription_url
+                SELECT i.*, s.platform, s.url as subscription_url, s.title as subscription_title
                 FROM items i
                 JOIN subscriptions s ON i.subscription_id = s.id
                 WHERE i.id = (
