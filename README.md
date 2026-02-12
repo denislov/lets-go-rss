@@ -112,7 +112,10 @@ python3 scripts/lets_go_rss.py --add "https://www.behance.net/yokohara6e48"
 python3 scripts/lets_go_rss.py --update --no-llm
 
 # Digest mode (1 item per account) | 摘要模式（每账号 1 条）
-python3 scripts/lets_go_rss.py --update --no-llm --digest
+python3 scripts/lets_go_rss.py --update --no-llm --digest --skip-setup
+
+# Read cached report (bot push) | 读取缓存报告（Bot 推送）
+python3 scripts/lets_go_rss.py --status
 
 # List subscriptions | 查看订阅
 python3 scripts/lets_go_rss.py --list
@@ -158,6 +161,13 @@ For Weibo, Douyin, Bilibili, and Xiaohongshu, you need a self-hosted [RSSHub](ht
 ```bash
 docker run -d --name rsshub -p 1200:1200 diygod/rsshub:chromium-bundled
 export RSSHUB_BASE_URL="http://localhost:1200"
+
+# Optional: tighter network timeout for bot timeout limits
+export RSS_HTTP_TIMEOUT="10"
+export RSS_HTTP_RETRIES="2"
+export RSS_XHS_TIMEOUT="6"
+export RSS_XHS_RETRIES="1"
+export RSS_YTDLP_TIMEOUT="12"
 ```
 
 ---
@@ -176,16 +186,25 @@ lets-go-rss/
 │   ├── database.py       # SQLite manager | 数据库
 │   ├── classifier.py     # AI classification | AI 分类
 │   ├── rss_generator.py  # XML generation | XML 生成
-│   └── report_generator.py # Markdown reports | 报告生成
+│   ├── report_generator.py # Markdown reports | 报告生成
+│   ├── run_update_cron.sh # Stable update command | 稳定更新命令
+│   └── run_status_push.sh # Stable status command | 稳定推送命令
 └── assets/               # Runtime data (gitignored) | 运行时数据
 ```
 
 ## ⏰ Scheduled Updates | 定时更新
 
 ```bash
-# crontab -e — update every 2 hours | 每 2 小时更新
-0 */2 * * * cd /path/to/lets-go-rss && python3 scripts/lets_go_rss.py --update --no-llm --digest
+# Recommended stable commands
+cd /path/to/lets-go-rss && ./scripts/run_update_cron.sh
+cd /path/to/lets-go-rss && ./scripts/run_status_push.sh
+
+# crontab -e — update at :55 every 2 hours, push at every even hour
+55 */2 * * * cd /path/to/lets-go-rss && ./scripts/run_update_cron.sh >> /tmp/rss_cron.log 2>&1
+0 */2 * * * cd /path/to/lets-go-rss && ./scripts/run_status_push.sh
 ```
+
+The engine now uses `assets/.update.lock` to prevent overlapping update jobs.
 
 ## 🤝 AI Classification (Optional) | AI 分类（可选）
 

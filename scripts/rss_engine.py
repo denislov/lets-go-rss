@@ -11,12 +11,43 @@ import time
 from datetime import datetime
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 
 from database import RSSDatabase
 from scrapers import ScraperFactory
 from classifier import get_classifier
 from rss_generator import RSSGenerator, OPMLGenerator
 from report_generator import MarkdownReportGenerator
+
+
+@contextmanager
+def update_lock(lock_path: str):
+    """Ensure only one update job runs at a time."""
+    lock_file = None
+    try:
+        lock_file = open(lock_path, "a+", encoding="utf-8")
+        try:
+            import fcntl  # Unix only
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(f"Another update is already running (lock: {lock_path})")
+        except ImportError:
+            # Non-Unix platforms: proceed without advisory lock.
+            pass
+
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(f"pid={os.getpid()} started={datetime.now().isoformat()}\n")
+        lock_file.flush()
+        yield
+    finally:
+        if lock_file:
+            try:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            lock_file.close()
 
 
 class RSSEngine:
@@ -63,9 +94,14 @@ class RSSEngine:
 
         # Try to fetch initial content
         print(f"\n📥 Fetching initial content...")
-        success = self._fetch_subscription(subscription_id, url, platform)
+        initial_fetch_ok = True
+        try:
+            self._fetch_subscription(subscription_id, url, platform)
+        except Exception as e:
+            print(f"\n⚠️  Initial fetch failed: {e}")
+            initial_fetch_ok = False
 
-        if success:
+        if initial_fetch_ok:
             print("\n✅ Subscription added successfully!")
             return True
         else:
@@ -74,7 +110,8 @@ class RSSEngine:
 
     def update_all(self, use_classification: bool = True, digest: bool = False) -> Dict[str, Any]:
         """Update all subscriptions in parallel."""
-        print("\n🔄 Starting RSS update...")
+        started_at = datetime.now()
+        print(f"\n🔄 Starting RSS update... [{started_at.strftime('%Y-%m-%d %H:%M:%S')}]")
 
         subscriptions = self.db.get_subscriptions()
 
@@ -83,16 +120,18 @@ class RSSEngine:
             return {"new_items": [], "total_subscriptions": 0}
 
         print(f"📋 Found {len(subscriptions)} active subscriptions")
-        print(f"⚡ Fetching in parallel...\n")
+        max_workers = max(1, int(os.environ.get("RSS_MAX_WORKERS", "5")))
+        print(f"⚡ Fetching in parallel... (workers={max_workers})\n")
 
         # Track update start time
         update_start = datetime.now().isoformat()
         t0 = time.time()
         all_new_items = []
         results = {}  # sub_id -> (count, error)
+        error_rows = []
 
         # Parallel fetch all subscriptions
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_sub = {}
             for sub in subscriptions:
                 future = executor.submit(
@@ -105,7 +144,8 @@ class RSSEngine:
                 sub = future_to_sub[future]
                 platform = sub["platform"].title()
                 try:
-                    new_items = future.result(timeout=30)
+                    # as_completed() yields only finished futures; no extra timeout needed here.
+                    new_items = future.result()
                     if new_items:
                         all_new_items.extend(new_items)
                         results[sub["id"]] = (len(new_items), None)
@@ -115,13 +155,27 @@ class RSSEngine:
                         print(f"  → {platform}: no new items")
                     self.db.update_subscription_timestamp(sub["id"])
                 except Exception as e:
-                    results[sub["id"]] = (0, str(e))
-                    print(f"  ❌ {platform}: {str(e)[:60]}")
+                    err_msg = str(e)
+                    results[sub["id"]] = (0, err_msg)
+                    print(f"  ❌ {platform}: {err_msg[:80]}")
+                    error_rows.append({
+                        "platform": sub["platform"],
+                        "url": sub["url"],
+                        "error": err_msg,
+                    })
 
         elapsed = time.time() - t0
         total_new = sum(r[0] for r in results.values())
         errors = sum(1 for r in results.values() if r[1])
-        print(f"\n✅ Done in {elapsed:.1f}s | +{total_new} new | {errors} errors\n")
+        ended_at = datetime.now()
+        print(f"\n✅ Done in {elapsed:.1f}s | +{total_new} new | {errors} errors")
+        print(f"🕒 Window: {started_at.strftime('%H:%M:%S')} -> {ended_at.strftime('%H:%M:%S')}\n")
+        if error_rows:
+            print("⚠️  Error summary:")
+            for row in error_rows:
+                print(f"  - {row['platform'].title()}: {row['error'][:100]}")
+                print(f"    {row['url']}")
+            print("")
 
         # Output directory = same dir as database (assets/)
         out_dir = os.path.dirname(self.db.db_path) or "."
@@ -167,6 +221,10 @@ class RSSEngine:
         items = scraper.fetch_items(url)
 
         if not items:
+            # Only raise if scraper recorded a real error (not just "no content")
+            scraper_error = getattr(scraper, "last_error", None)
+            if scraper_error:
+                raise RuntimeError(scraper_error)
             return []
 
         # Auto-update subscription title from feed channel name
@@ -188,12 +246,15 @@ class RSSEngine:
 
         for item in items:
             item_id = item.get("item_id")
-
-            # Skip if already exists
-            if self.db.item_exists(item_id):
+            if not item_id:
                 continue
 
-            # Classify item
+            # Fast path: avoid unnecessary classification work for existing items.
+            # INSERT OR IGNORE in add_item() still protects against race conditions.
+            if self.db.item_exists(item_id):
+                continue
+            item["category"] = "其他"
+
             if use_classification:
                 try:
                     category = self.classifier.classify_item(
@@ -203,12 +264,9 @@ class RSSEngine:
                     item["category"] = category
                 except Exception as e:
                     print(f"  ⚠️  Classification error: {e}")
-                    item["category"] = "其他"
-            else:
-                item["category"] = "其他"
 
-            # Add to database
-            self.db.add_item(
+            # Atomic insert — INSERT OR IGNORE handles dedup
+            added = self.db.add_item(
                 item_id=item_id,
                 subscription_id=subscription_id,
                 title=item.get("title", ""),
@@ -219,7 +277,8 @@ class RSSEngine:
                 metadata=item.get("metadata")
             )
 
-            new_items.append(item)
+            if added:
+                new_items.append(item)
 
         return new_items
 
@@ -323,7 +382,9 @@ Examples:
             engine.add_subscription(args.add)
 
         if args.update:
-            engine.update_all(use_classification=use_llm, digest=args.digest)
+            lock_path = os.path.join(os.path.dirname(actual_db_path) or ".", ".update.lock")
+            with update_lock(lock_path):
+                engine.update_all(use_classification=use_llm, digest=args.digest)
 
         if args.list:
             engine.list_subscriptions()
@@ -335,6 +396,9 @@ Examples:
         print("\n\n⚠️  Operation cancelled by user")
         sys.exit(1)
     except Exception as e:
+        if "Another update is already running" in str(e):
+            print(f"\n⚠️  {e}")
+            return
         print(f"\n❌ Error: {e}")
         sys.exit(1)
 

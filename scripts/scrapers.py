@@ -39,21 +39,28 @@ class BaseScraper:
             "Accept-Language": "en-US,en;q=0.5",
             "Connection": "keep-alive",
         }
-        self.timeout = 15
+        self.timeout = float(os.environ.get("RSS_HTTP_TIMEOUT", "10"))
+        self.max_retries = max(1, int(os.environ.get("RSS_HTTP_RETRIES", "2")))
+        self.retry_backoff = float(os.environ.get("RSS_HTTP_BACKOFF", "0.8"))
+        self.last_error = None
 
-    def get(self, url: str, headers: Optional[Dict] = None) -> httpx.Response:
+    def get(self, url: str, headers: Optional[Dict] = None,
+            timeout: Optional[float] = None,
+            retries: Optional[int] = None) -> httpx.Response:
         """Make GET request with retry logic"""
+        request_timeout = timeout if timeout is not None else self.timeout
+        max_retries = max(1, retries if retries is not None else self.max_retries)
         request_headers = {**self.headers, **(headers or {})}
-        for attempt in range(3):
+        for attempt in range(max_retries):
             try:
-                with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+                with httpx.Client(timeout=request_timeout, follow_redirects=True) as client:
                     response = client.get(url, headers=request_headers)
                     response.raise_for_status()
                     return response
-            except Exception as e:
-                if attempt == 2:
+            except Exception:
+                if attempt == max_retries - 1:
                     raise
-                time.sleep(1 * (attempt + 1))
+                time.sleep(self.retry_backoff * (attempt + 1))
 
 
 class NativeRSSScraper(BaseScraper):
@@ -154,9 +161,11 @@ class RSSHubScraper(NativeRSSScraper):
 
     def fetch_items(self, url: str) -> List[Dict[str, Any]]:
         """Fetch via RSSHub route"""
+        self.last_error = None
         user_id = self.extract_user_id(url)
         if not user_id:
             print(f"    ⚠️  Cannot extract user ID from: {url}")
+            self.last_error = f"Cannot extract user ID from {url}"
             return []
 
         rsshub_url = f"{self.RSSHUB_BASE}{self.route_template.format(id=user_id)}"
@@ -170,8 +179,10 @@ class RSSHubScraper(NativeRSSScraper):
             else:
                 # Might be an error page
                 print(f"    ⚠️  RSSHub returned non-RSS content (HTTP {response.status_code})")
+                self.last_error = f"Non-RSS content from RSSHub (HTTP {response.status_code})"
                 return []
         except Exception as e:
+            self.last_error = str(e)
             print(f"    ❌ RSSHub fetch failed: {e}")
             return []
 
@@ -192,8 +203,10 @@ class VimeoScraper(NativeRSSScraper):
         return match.group(1) if match else None
 
     def fetch_items(self, url: str) -> List[Dict[str, Any]]:
+        self.last_error = None
         username = self.extract_user_id(url)
         if not username:
+            self.last_error = f"Cannot extract Vimeo username from {url}"
             return []
 
         rss_url = f"https://vimeo.com/{username}/videos/rss"
@@ -203,6 +216,7 @@ class VimeoScraper(NativeRSSScraper):
             response = self.get(rss_url)
             return self.parse_rss_xml(response.text, "vimeo")
         except Exception as e:
+            self.last_error = str(e)
             print(f"    ❌ Vimeo RSS fetch failed: {e}")
             return []
 
@@ -216,8 +230,10 @@ class BehanceScraper(NativeRSSScraper):
         return match.group(1) if match else None
 
     def fetch_items(self, url: str) -> List[Dict[str, Any]]:
+        self.last_error = None
         username = self.extract_user_id(url)
         if not username:
+            self.last_error = f"Cannot extract Behance username from {url}"
             return []
 
         rss_url = f"https://www.behance.net/feeds/user?username={username}"
@@ -227,6 +243,7 @@ class BehanceScraper(NativeRSSScraper):
             response = self.get(rss_url)
             return self.parse_rss_xml(response.text, "behance")
         except Exception as e:
+            self.last_error = str(e)
             print(f"    ❌ Behance RSS fetch failed: {e}")
             return []
 
@@ -255,8 +272,10 @@ class YouTubeScraper(BaseScraper):
         return None
 
     def fetch_items(self, url: str) -> List[Dict[str, Any]]:
+        self.last_error = None
         channel_ref = self.extract_channel_id(url)
         if not channel_ref:
+            self.last_error = f"Cannot extract YouTube channel from {url}"
             return []
 
         # Construct videos URL
@@ -277,6 +296,7 @@ class YouTubeScraper(BaseScraper):
         ])
 
         try:
+            ytdlp_timeout = int(os.environ.get("RSS_YTDLP_TIMEOUT", "20"))
             result = subprocess.run(
                 [
                     "yt-dlp",
@@ -287,10 +307,11 @@ class YouTubeScraper(BaseScraper):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=ytdlp_timeout,
             )
 
             if result.returncode != 0:
+                self.last_error = result.stderr[:200] or "yt-dlp returned non-zero status"
                 print(f"    ⚠️  yt-dlp error: {result.stderr[:200]}")
                 return []
 
@@ -340,12 +361,15 @@ class YouTubeScraper(BaseScraper):
             return items
 
         except subprocess.TimeoutExpired:
-            print("    ❌ yt-dlp timed out (60s)")
+            self.last_error = "yt-dlp timed out"
+            print(f"    ❌ yt-dlp timed out ({ytdlp_timeout}s)")
             return []
         except FileNotFoundError:
+            self.last_error = "yt-dlp not found"
             print("    ❌ yt-dlp not found. Install: pip install yt-dlp")
             return []
         except Exception as e:
+            self.last_error = str(e)
             print(f"    ❌ YouTube fetch error: {e}")
             return []
 
@@ -417,6 +441,9 @@ class XiaohongshuScraper(RSSHubScraper):
 
     def __init__(self):
         super().__init__("/xiaohongshu/user/{id}/notes")
+        # XHS route is often unstable: fail fast to avoid blocking the whole update cycle
+        self.timeout = min(self.timeout, float(os.environ.get("RSS_XHS_TIMEOUT", "6")))
+        self.max_retries = max(1, int(os.environ.get("RSS_XHS_RETRIES", "1")))
 
     def extract_user_id(self, url: str) -> Optional[str]:
         match = re.search(r"user/profile/([a-zA-Z0-9]+)", url)

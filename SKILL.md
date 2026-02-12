@@ -18,7 +18,7 @@ python3 scripts/lets_go_rss.py --add "https://www.behance.net/yokohara6e48"
 
 ### 更新全部（耗时操作，建议用 crontab 后台跑）
 ```bash
-python3 scripts/lets_go_rss.py --update --no-llm --digest
+python3 scripts/lets_go_rss.py --update --no-llm --digest --skip-setup
 ```
 
 ### 读取缓存报告（Bot 推送用，瞬间返回）
@@ -38,13 +38,22 @@ python3 scripts/lets_go_rss.py --stats
 
 **方案**：抓取和推送解耦——crontab 提前跑更新，Bot 只读缓存文件。
 
+### 稳定命令（推荐）
+```bash
+# 后台更新（内置超时参数 + 并发防重入锁）
+./scripts/run_update_cron.sh
+
+# Bot 推送只读缓存
+./scripts/run_status_push.sh
+```
+
 ```bash
 # crontab -e
 # 每 2 小时的 55 分更新（提前 5 分钟准备好数据）
-55 */2 * * * cd /path/to/lets-go-rss && python3 scripts/lets_go_rss.py --update --no-llm --digest
+55 */2 * * * cd /path/to/lets-go-rss && ./scripts/run_update_cron.sh >> /tmp/rss_cron.log 2>&1
 
 # Bot 在整点读缓存推送（瞬间完成）
-# python3 scripts/lets_go_rss.py --status
+0 */2 * * * cd /path/to/lets-go-rss && ./scripts/run_status_push.sh
 ```
 
 Bot 只需调用 `--status`，该命令直接读取 `assets/latest_update.md` 并输出内容，无需网络请求、无需等待。
@@ -74,6 +83,13 @@ export ANTHROPIC_API_KEY="your-key"
 # 可选：中国平台（需要 Docker）
 docker run -d --name rsshub -p 1200:1200 diygod/rsshub:chromium-bundled
 export RSSHUB_BASE_URL="http://localhost:1200"
+
+# 可选：抓取超时调优（Bot 超时场景）
+export RSS_HTTP_TIMEOUT="10"
+export RSS_HTTP_RETRIES="2"
+export RSS_XHS_TIMEOUT="6"
+export RSS_XHS_RETRIES="1"
+export RSS_YTDLP_TIMEOUT="12"
 ```
 
 ## 输出格式
