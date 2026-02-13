@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
+# Ensure Homebrew tools (yt-dlp, python3, etc.) are available in cron env
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
 # Safer defaults for bot timeout budgets; can be overridden by env.
 export RSS_HTTP_TIMEOUT="${RSS_HTTP_TIMEOUT:-10}"
 export RSS_HTTP_RETRIES="${RSS_HTTP_RETRIES:-2}"

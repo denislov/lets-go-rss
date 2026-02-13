@@ -379,14 +379,56 @@ class YouTubeScraper(BaseScraper):
 # ============================================================
 
 class BilibiliScraper(RSSHubScraper):
-    """Bilibili scraper via RSSHub — needs BILIBILI_COOKIE in RSSHub config"""
+    """Bilibili scraper via RSSHub — tries /video route first, falls back to /dynamic."""
 
     def __init__(self):
         super().__init__("/bilibili/user/video/{id}")
+        self._fallback_route = "/bilibili/user/dynamic/{id}"
 
     def extract_user_id(self, url: str) -> Optional[str]:
         match = re.search(r"space\.bilibili\.com/(\d+)", url)
         return match.group(1) if match else None
+
+    def fetch_items(self, url: str) -> List[Dict[str, Any]]:
+        """Try video route first; on 503 (anti-bot), fall back to dynamic route."""
+        self.last_error = None
+        user_id = self.extract_user_id(url)
+        if not user_id:
+            self.last_error = f"Cannot extract Bilibili user ID from {url}"
+            return []
+
+        # Try primary /video route
+        video_url = f"{self.RSSHUB_BASE}/bilibili/user/video/{user_id}"
+        print(f"    📡 RSSHub: {video_url}")
+        try:
+            response = self.get(video_url)
+            ct = response.headers.get("content-type", "")
+            if "xml" in ct or "rss" in ct:
+                items = self.parse_rss_xml(response.text, "bilibili")
+                if items:
+                    return items
+        except Exception as e:
+            err_msg = str(e)
+            if "503" in err_msg or "风控" in err_msg:
+                # Anti-bot triggered, try dynamic route
+                dynamic_url = f"{self.RSSHUB_BASE}/bilibili/user/dynamic/{user_id}"
+                print(f"    ⚠️  Video route blocked, trying dynamic: {dynamic_url}")
+                try:
+                    response = self.get(dynamic_url)
+                    ct = response.headers.get("content-type", "")
+                    if "xml" in ct or "rss" in ct:
+                        items = self.parse_rss_xml(response.text, "bilibili")
+                        if items:
+                            return items
+                except Exception as e2:
+                    self.last_error = f"Both routes failed: video={err_msg[:60]}, dynamic={e2}"
+                    print(f"    ❌ Dynamic fallback also failed: {e2}")
+                    return []
+            self.last_error = err_msg
+            print(f"    ❌ RSSHub fetch failed: {e}")
+            return []
+
+        return []
 
 
 class WeiboScraper(RSSHubScraper):
@@ -431,19 +473,32 @@ class DouyinScraper(RSSHubScraper):
         return None
 
 
-class XiaohongshuScraper(RSSHubScraper):
-    """Xiaohongshu scraper via RSSHub — needs XIAOHONGSHU_COOKIE in RSSHub config.
-    
-    Note: As of 2026-02, the RSSHub xiaohongshu route may be unstable due to
-    aggressive anti-scraping measures by the platform. If this fails, it's likely
-    an upstream RSSHub issue rather than a configuration problem.
+class XiaohongshuScraper(BaseScraper):
+    """Xiaohongshu scraper — uses Playwright with rednote-mcp cookies.
+
+    Strategy: load user profile page in headless browser, intercept the XHR
+    response from the `user_posted` API. The browser handles request signing
+    automatically, bypassing the 406 error from direct API calls.
+
+    Cookie source: ~/.mcp/rednote/cookies.json (managed by rednote-mcp init)
+    Fallback: RSSHub route (may fail due to XHS anti-scraping)
     """
 
+    RSSHUB_BASE = os.environ.get("RSSHUB_BASE_URL", "http://localhost:1200")
+    COOKIE_PATH = os.path.expanduser("~/.mcp/rednote/cookies.json")
+
     def __init__(self):
-        super().__init__("/xiaohongshu/user/{id}/notes")
-        # XHS route is often unstable: fail fast to avoid blocking the whole update cycle
-        self.timeout = min(self.timeout, float(os.environ.get("RSS_XHS_TIMEOUT", "6")))
-        self.max_retries = max(1, int(os.environ.get("RSS_XHS_RETRIES", "1")))
+        super().__init__()
+        self.timeout = float(os.environ.get("RSS_XHS_TIMEOUT", "15"))
+        self._pw_cookies = self._load_pw_cookies()
+
+    def _load_pw_cookies(self) -> list:
+        """Load Playwright-format cookies from rednote-mcp store."""
+        try:
+            with open(self.COOKIE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
 
     def extract_user_id(self, url: str) -> Optional[str]:
         match = re.search(r"user/profile/([a-zA-Z0-9]+)", url)
@@ -451,6 +506,201 @@ class XiaohongshuScraper(RSSHubScraper):
             return match.group(1)
         match = re.search(r"xiaohongshu\.com/([a-zA-Z0-9]+)", url)
         return match.group(1) if match else None
+
+    def fetch_items(self, url: str) -> List[Dict[str, Any]]:
+        self.last_error = None
+        user_id = self.extract_user_id(url)
+        if not user_id:
+            self.last_error = f"Cannot extract XHS user ID from {url}"
+            return []
+
+        # Try Playwright with rednote-mcp cookies
+        if self._pw_cookies:
+            items = self._fetch_via_playwright(user_id)
+            if items:
+                return items
+
+        # Fallback: RSSHub
+        return self._fetch_via_rsshub(user_id)
+
+    def _fetch_via_playwright(self, user_id: str) -> List[Dict[str, Any]]:
+        """Fetch user notes by intercepting XHR in a headless browser."""
+        print(f"    📡 XHS Playwright: user={user_id}")
+        captured_notes = []
+
+        try:
+            from playwright.sync_api import sync_playwright
+
+            def handle_response(response):
+                """Capture the user_posted API response."""
+                if "user_posted" in response.url or "user/posted" in response.url:
+                    try:
+                        data = response.json()
+                        notes = data.get("data", {}).get("notes", [])
+                        if notes:
+                            captured_notes.extend(notes)
+                    except Exception:
+                        pass
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent=self.headers["User-Agent"],
+                    viewport={"width": 1280, "height": 800},
+                )
+                # Load rednote-mcp cookies
+                context.add_cookies(self._pw_cookies)
+
+                page = context.new_page()
+                page.on("response", handle_response)
+
+                profile_url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
+                page.goto(profile_url, timeout=int(self.timeout * 1000), wait_until="domcontentloaded")
+
+                # Check for captcha/login redirect (cookies expired)
+                current_url = page.url
+                if "captcha" in current_url or "login" in current_url:
+                    print("    ⚠️  XHS cookies expired (captcha/login redirect)")
+                    print("    💡 Fix: run 'npx rednote-mcp init' to re-login")
+                    self.last_error = "XHS cookies expired — run 'npx rednote-mcp init'"
+                    browser.close()
+                    return []
+
+                # Wait for notes to load (either via XHR interception or DOM)
+                try:
+                    page.wait_for_selector(
+                        ".note-item, .feeds-container, section.note-item",
+                        timeout=8000,
+                    )
+                    # Small delay for XHR to complete
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass  # XHR may have already been captured
+
+                # If XHR interception worked, parse captured_notes
+                if captured_notes:
+                    items = self._parse_api_notes(captured_notes, user_id, page)
+                    browser.close()
+                    if items:
+                        print(f"  ✓ XHS: {len(items)} notes via Playwright XHR")
+                        return items
+
+                # Fallback: try to extract from DOM
+                items = self._parse_dom_notes(page, user_id)
+                browser.close()
+                if items:
+                    print(f"  ✓ XHS: {len(items)} notes via DOM")
+                return items
+
+        except ImportError:
+            print("    ⚠️  Playwright not available")
+            return []
+        except Exception as e:
+            print(f"    ⚠️  XHS Playwright failed: {e}")
+            return []
+
+    def _parse_api_notes(self, notes: list, user_id: str, page) -> List[Dict[str, Any]]:
+        """Parse notes from intercepted API response."""
+        items = []
+        # Try to get author name from page
+        author = ""
+        try:
+            author_el = page.query_selector(".user-name, .info .username")
+            if author_el:
+                author = author_el.inner_text().strip()
+        except Exception:
+            pass
+
+        for note in notes[:20]:
+            note_id = note.get("note_id", "")
+            if not note_id:
+                continue
+            display_title = note.get("display_title", "")
+            timestamp_ms = note.get("time", 0) or note.get("last_update_time", 0)
+            pub_date = ""
+            if timestamp_ms:
+                try:
+                    pub_date = datetime.fromtimestamp(timestamp_ms / 1000).isoformat()
+                except (ValueError, OSError):
+                    pass
+
+            link = f"https://www.xiaohongshu.com/explore/{note_id}"
+            item_id = f"xiaohongshu_{hashlib.md5(note_id.encode()).hexdigest()[:12]}"
+
+            cover = note.get("cover", {})
+            cover_url = cover.get("url", "") if isinstance(cover, dict) else ""
+            note_author = note.get("user", {}).get("nickname", "") or author
+
+            items.append({
+                "item_id": item_id,
+                "title": display_title or "(无标题)",
+                "description": "",
+                "link": link,
+                "pub_date": pub_date,
+                "metadata": {
+                    "_channel_title": note_author,
+                    "note_id": note_id,
+                    "cover_url": cover_url,
+                    "liked_count": note.get("liked_count", ""),
+                }
+            })
+        return items
+
+    def _parse_dom_notes(self, page, user_id: str) -> List[Dict[str, Any]]:
+        """Fallback: extract notes directly from DOM."""
+        items = []
+        try:
+            note_links = page.query_selector_all("section.note-item a, a.cover")
+            for link_el in note_links[:20]:
+                href = link_el.get_attribute("href") or ""
+                note_match = re.search(r"/explore/([a-f0-9]+)", href)
+                if not note_match:
+                    note_match = re.search(r"/discovery/item/([a-f0-9]+)", href)
+                if not note_match:
+                    continue
+
+                note_id = note_match.group(1)
+                # Try to get title from sibling or parent
+                title = ""
+                try:
+                    title_el = link_el.query_selector(".title, .note-title, span")
+                    if title_el:
+                        title = title_el.inner_text().strip()
+                except Exception:
+                    pass
+
+                link = f"https://www.xiaohongshu.com/explore/{note_id}"
+                item_id = f"xiaohongshu_{hashlib.md5(note_id.encode()).hexdigest()[:12]}"
+
+                items.append({
+                    "item_id": item_id,
+                    "title": title or "(无标题)",
+                    "description": "",
+                    "link": link,
+                    "pub_date": "",
+                    "metadata": {"note_id": note_id}
+                })
+        except Exception as e:
+            print(f"    ⚠️  DOM extraction failed: {e}")
+        return items
+
+    def _fetch_via_rsshub(self, user_id: str) -> List[Dict[str, Any]]:
+        """Fallback: fetch via RSSHub (may fail due to XHS anti-scraping)."""
+        rsshub_url = f"{self.RSSHUB_BASE}/xiaohongshu/user/{user_id}/notes"
+        print(f"    📡 RSSHub fallback: {rsshub_url}")
+        try:
+            response = self.get(rsshub_url, timeout=6, retries=1)
+            ct = response.headers.get("content-type", "")
+            if "xml" in ct or "rss" in ct:
+                parser = NativeRSSScraper()
+                return parser.parse_rss_xml(response.text, "xiaohongshu")
+            else:
+                self.last_error = f"Non-RSS content from RSSHub (HTTP {response.status_code})"
+                return []
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"    ❌ RSSHub fallback also failed: {e}")
+            return []
 
 
 # ============================================================
