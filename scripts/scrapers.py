@@ -649,23 +649,55 @@ class XiaohongshuScraper(BaseScraper):
     def _parse_dom_notes(self, page, user_id: str) -> List[Dict[str, Any]]:
         """Fallback: extract notes directly from DOM."""
         items = []
+        seen_ids = set()
+
+        # Get author name from page header
+        author = ""
         try:
-            note_links = page.query_selector_all("section.note-item a, a.cover")
-            for link_el in note_links[:20]:
-                href = link_el.get_attribute("href") or ""
-                note_match = re.search(r"/explore/([a-f0-9]+)", href)
+            author_el = page.query_selector(".user-name, .info .username, .user-nickname")
+            if author_el:
+                author = author_el.inner_text().strip()
+        except Exception:
+            pass
+
+        try:
+            # Each section.note-item contains a cover link and title text
+            note_sections = page.query_selector_all("section.note-item")
+            if not note_sections:
+                note_sections = page.query_selector_all(".note-item")
+
+            for section in note_sections[:20]:
+                # Extract note_id from cover link href
+                cover = section.query_selector("a.cover")
+                if not cover:
+                    continue
+                href = cover.get_attribute("href") or ""
+                # Pattern: /user/profile/{uid}/{note_id}?... or /explore/{note_id}
+                note_match = re.search(r"/([a-f0-9]{24})(?:\?|$)", href)
                 if not note_match:
-                    note_match = re.search(r"/discovery/item/([a-f0-9]+)", href)
+                    note_match = re.search(r"/explore/([a-f0-9]+)", href)
                 if not note_match:
                     continue
 
                 note_id = note_match.group(1)
-                # Try to get title from sibling or parent
+                if note_id in seen_ids:
+                    continue
+                seen_ids.add(note_id)
+
+                # Extract title from section inner_text
                 title = ""
                 try:
-                    title_el = link_el.query_selector(".title, .note-title, span")
-                    if title_el:
-                        title = title_el.inner_text().strip()
+                    text = section.inner_text().strip()
+                    # inner_text contains: optional "置顶\n", title, author, likes
+                    lines = [l.strip() for l in text.split("\n") if l.strip()]
+                    # Skip "置顶" tag and author/likes at end
+                    for line in lines:
+                        if line in ("置顶",) or line.isdigit():
+                            continue
+                        if line == author:
+                            continue
+                        title = line
+                        break
                 except Exception:
                     pass
 
@@ -678,7 +710,10 @@ class XiaohongshuScraper(BaseScraper):
                     "description": "",
                     "link": link,
                     "pub_date": "",
-                    "metadata": {"note_id": note_id}
+                    "metadata": {
+                        "_channel_title": author,
+                        "note_id": note_id,
+                    }
                 })
         except Exception as e:
             print(f"    ⚠️  DOM extraction failed: {e}")
