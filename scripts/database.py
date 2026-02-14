@@ -1,10 +1,7 @@
-"""
-SQLite database manager for RSS engine
-Tracks fetched items to support incremental updates
-"""
-
 import re
 import sqlite3
+import threading
+import time
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -12,18 +9,32 @@ import json
 
 _ISO_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}')
 
+# Module-level lock: serialises ALL SQLite opens / writes so that
+# Playwright's Chromium sub-process can never hold a WAL shm-lock
+# while another thread tries to open the same database.
+_DB_LOCK = threading.Lock()
+
 
 class RSSDatabase:
     def __init__(self, db_path: str = "rss_database.db"):
         self.db_path = db_path
         self.init_database()
 
-    def _connect(self):
-        """Create a SQLite connection with WAL mode and safer lock timeout."""
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        return conn
+    def _connect(self, retries: int = 3):
+        """Create a SQLite connection with WAL mode, busy timeout, and retry."""
+        last_err = None
+        for attempt in range(retries):
+            try:
+                with _DB_LOCK:
+                    conn = sqlite3.connect(self.db_path, timeout=30)
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=30000")
+                return conn
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if attempt < retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+        raise last_err
 
     def init_database(self):
         """Initialize database schema"""
