@@ -1,6 +1,6 @@
 ---
 name: lets-go-rss
-description: 轻量级全平台 RSS 订阅管理器。一键聚合 YouTube、Vimeo、Behance、B站、微博、抖音、小红书的内容更新，支持增量去重和 AI 智能分类。
+description: 轻量级全平台 RSS 订阅管理器。一键聚合 YouTube、Vimeo、Behance、Twitter/X、B站、微博、抖音、小红书的内容更新，支持增量去重和 AI 智能分类。
 ---
 
 # Let's Go RSS
@@ -69,6 +69,7 @@ Bot 只需调用 `--status`，该命令直接读取 `assets/latest_update.md` �
 | 抖音 | RSSHub | ⚠️ 需配置 |
 | B站 | RSSHub | ⚠️ 需配置 |
 | 小红书 | RSSHub | ⚠️ 实验性 |
+| Twitter/X | Syndication API | ✅ |
 
 ## 安装依赖
 
@@ -92,8 +93,56 @@ export RSS_XHS_RETRIES="1"
 export RSS_YTDLP_TIMEOUT="12"
 ```
 
-## 输出格式
+## Bot 汇报规范（⚠️ 必须严格遵守）
 
-- `assets/latest_update.md` — Markdown 更新报告（`--status` 读取此文件）
-- `assets/feed.xml` — 标准 RSS 2.0 XML
-- `assets/summary.md` — 统计摘要
+当 Bot 需要推送 RSS 更新时，**只需执行一个命令，然后原样转发输出**。
+
+### 完整流程（仅 2 步）
+
+```
+步骤 1: 运行命令
+python3 scripts/lets_go_rss.py --status
+
+步骤 2: 把命令输出原封不动地作为你的回复发送
+```
+
+**就这么简单。不需要任何额外处理。**
+
+### 输出格式说明
+
+`--status` 命令会输出类似以下格式的纯文本（自动生成，不需要 Bot 构造）：
+
+```
+📡 RSS 更新摘要 | 2026-02-21 18:23 | 3 个账号有新内容
+
+🆕 📺 影视飓风  02-18 03:00
+   [【4K限免】你的新设备能顶住吗？](https://t.bilibili.com/1170572725010300960)
+
+🆕 🐦 歸藏(guizang.ai)  02-14 17:15
+   [Tweet by @op7418](https://x.com/op7418/status/2022721414462374031)
+
+🎬 Matthew Encina  12-07 00:00
+   [Why Moving on Helps You Grow](https://www.youtube.com/watch?v=xxxxx)
+```
+
+每条包含：emoji + 账号名 + 发布时间 → 标题带超链接。🆕 标记有新内容的账号。
+
+### ❌ 禁止行为
+
+- ❌ **不得重新排版**：不可以按平台分组、加表格、加标题 `#` 层级
+- ❌ **不得分多条消息**：所有内容必须在一条消息内发送
+- ❌ **不得删除/修改链接**：标题中的链接不可去掉或替换
+- ❌ **不得添加前言后语**：不要加"以下是 RSS 更新"等多余文字
+- ❌ **不得执行 --update**：推送时只读缓存，不做抓取
+
+---
+
+## 输出文件
+
+| 文件 | 说明 |
+|------|------|
+| `assets/latest_update.md` | 更新报告（`--status` 读取此文件） |
+| `assets/feed.xml` | 标准 RSS 2.0 XML |
+| `assets/summary.md` | 统计摘要 |
+| `assets/subscriptions.opml` | OPML 订阅导出 |
+

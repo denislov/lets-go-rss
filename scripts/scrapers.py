@@ -739,7 +739,159 @@ class XiaohongshuScraper(BaseScraper):
 
 
 # ============================================================
-#  Factory
+#  Tier 1c: Twitter/X via Syndication API (zero config)
+# ============================================================
+
+class TwitterScraper(BaseScraper):
+    """Twitter/X scraper — uses the public Syndication API (no auth needed).
+
+    Primary:  syndication.twitter.com (embedded __NEXT_DATA__ JSON)
+    Fallback: RSSHub /twitter/user/{id} (requires TWITTER_AUTH_TOKEN in RSSHub)
+    """
+
+    SYNDICATION_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
+    RSSHUB_BASE = os.environ.get("RSSHUB_BASE_URL", "http://localhost:1200")
+
+    def extract_user_id(self, url: str) -> Optional[str]:
+        """Extract username from x.com or twitter.com URL."""
+        match = re.search(r"(?:x\.com|twitter\.com)/(@?[\w]+)", url)
+        if match:
+            username = match.group(1).lstrip("@")
+            # Skip non-user paths
+            if username.lower() in ("home", "explore", "search", "notifications",
+                                     "messages", "settings", "i", "compose"):
+                return None
+            return username
+        return None
+
+    def fetch_items(self, url: str) -> List[Dict[str, Any]]:
+        self.last_error = None
+        username = self.extract_user_id(url)
+        if not username:
+            self.last_error = f"Cannot extract Twitter username from {url}"
+            return []
+
+        # Try Syndication API first (zero config)
+        items = self._fetch_via_syndication(username)
+        if items:
+            return items
+
+        # Fallback: RSSHub (needs TWITTER_AUTH_TOKEN configured in RSSHub)
+        return self._fetch_via_rsshub(username)
+
+    def _fetch_via_syndication(self, username: str) -> List[Dict[str, Any]]:
+        """Fetch tweets from the public Twitter Syndication API."""
+        syndication_url = self.SYNDICATION_URL.format(username=username)
+        print(f"    📡 Twitter Syndication: {syndication_url}")
+
+        try:
+            response = self.get(syndication_url, timeout=15)
+            html = response.text
+
+            # Extract __NEXT_DATA__ JSON from the HTML page
+            match = re.search(
+                r'<script\s+id="__NEXT_DATA__"\s+type="application/json">\s*({.+?})\s*</script>',
+                html, re.DOTALL
+            )
+            if not match:
+                print("    ⚠️  Cannot find __NEXT_DATA__ in Syndication response")
+                self.last_error = "No __NEXT_DATA__ in Syndication response"
+                return []
+
+            data = json.loads(match.group(1))
+            timeline = (data.get("props", {})
+                            .get("pageProps", {})
+                            .get("timeline", {}))
+
+            # timeline.entries[] contains tweet data
+            entries = timeline.get("entries", [])
+            if not entries:
+                print("    ⚠️  No entries in Syndication timeline")
+                self.last_error = "Empty timeline from Syndication API"
+                return []
+
+            # Extract user display name from first entry
+            channel_title = ""
+
+            items = []
+            for entry in entries[:20]:
+                content = entry.get("content", {})
+                tweet = content.get("tweet", content)  # some entries nest under "tweet"
+
+                tweet_id = tweet.get("id_str", "")
+                if not tweet_id:
+                    continue
+
+                full_text = tweet.get("full_text", tweet.get("text", ""))
+                created_at = tweet.get("created_at", "")
+                screen_name = tweet.get("user", {}).get("screen_name", username)
+                display_name = tweet.get("user", {}).get("name", "")
+
+                if not channel_title and display_name:
+                    channel_title = display_name
+
+                # Parse created_at (format: "Thu Jun 19 02:01:31 +0000 2025")
+                pub_date = ""
+                if created_at:
+                    try:
+                        dt = datetime.strptime(created_at, "%a %b %d %H:%M:%S %z %Y")
+                        pub_date = dt.isoformat()
+                    except ValueError:
+                        pass
+
+                # Build tweet link
+                link = f"https://x.com/{screen_name}/status/{tweet_id}"
+
+                # Clean text: remove t.co URLs for cleaner title
+                clean_text = re.sub(r'https?://t\.co/\S+', '', full_text).strip()
+                # Truncate for title use
+                title = clean_text[:120] + "..." if len(clean_text) > 120 else clean_text
+                if not title:
+                    title = f"Tweet by @{screen_name}"
+
+                item_id = f"twitter_{hashlib.md5(tweet_id.encode()).hexdigest()[:12]}"
+                items.append({
+                    "item_id": item_id,
+                    "title": title,
+                    "description": full_text[:500],
+                    "link": link,
+                    "pub_date": pub_date,
+                    "metadata": {
+                        "_channel_title": channel_title or f"@{screen_name}",
+                        "tweet_id": tweet_id,
+                        "favorite_count": tweet.get("favorite_count", 0),
+                        "retweet_count": tweet.get("retweet_count", 0),
+                    }
+                })
+
+            if items:
+                print(f"    ✓ Twitter: {len(items)} tweets via Syndication API")
+            return items
+
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"    ⚠️  Twitter Syndication failed: {e}")
+            return []
+
+    def _fetch_via_rsshub(self, username: str) -> List[Dict[str, Any]]:
+        """Fallback: fetch via RSSHub (requires TWITTER_AUTH_TOKEN)."""
+        rsshub_url = f"{self.RSSHUB_BASE}/twitter/user/{username}"
+        print(f"    📡 RSSHub fallback: {rsshub_url}")
+        try:
+            response = self.get(rsshub_url, timeout=10)
+            ct = response.headers.get("content-type", "")
+            if "xml" in ct or "rss" in ct:
+                parser = NativeRSSScraper()
+                return parser.parse_rss_xml(response.text, "twitter")
+            else:
+                self.last_error = f"Non-RSS content from RSSHub (HTTP {response.status_code})"
+                return []
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"    ❌ RSSHub fallback also failed: {e}")
+            return []
+
+
 # ============================================================
 
 class ScraperFactory:
@@ -764,6 +916,8 @@ class ScraperFactory:
             return "behance"
         elif "douyin.com" in url_lower:
             return "douyin"
+        elif "x.com" in url_lower or "twitter.com" in url_lower:
+            return "twitter"
         else:
             return "unknown"
 
@@ -778,6 +932,7 @@ class ScraperFactory:
             "vimeo": VimeoScraper,
             "behance": BehanceScraper,
             "douyin": DouyinScraper,
+            "twitter": TwitterScraper,
         }
 
         scraper_class = scrapers.get(platform.lower())
