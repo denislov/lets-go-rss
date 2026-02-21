@@ -243,7 +243,13 @@ class BehanceScraper(NativeRSSScraper):
             response = self.get(rss_url)
             return self.parse_rss_xml(response.text, "behance")
         except Exception as e:
-            self.last_error = str(e)
+            err = str(e)
+            # Behance occasionally rate-limits with 403; treat as temporary skip.
+            if "403" in err:
+                print("    ⚠️  Behance rate-limited (403), skip this cycle")
+                self.last_error = None
+                return []
+            self.last_error = err
             print(f"    ❌ Behance RSS fetch failed: {e}")
             return []
 
@@ -253,7 +259,45 @@ class BehanceScraper(NativeRSSScraper):
 # ============================================================
 
 class YouTubeScraper(BaseScraper):
-    """YouTube scraper — uses yt-dlp for reliable metadata extraction"""
+    """YouTube scraper — uses yt-dlp, with native Atom feed fallback."""
+
+    def _fetch_via_atom_feed(self, channel_ref: str) -> List[Dict[str, Any]]:
+        """Fallback: parse YouTube's native Atom feed (no yt-dlp needed).
+
+        Works when yt-dlp is blocked by bot checks or times out.
+        """
+        channel_id = ""
+        if channel_ref.startswith("UC"):
+            channel_id = channel_ref
+        else:
+            # Resolve channel_id from page HTML
+            if channel_ref.startswith("@"):
+                page_url = f"https://www.youtube.com/{channel_ref}/videos"
+            else:
+                page_url = f"https://www.youtube.com/channel/{channel_ref}/videos"
+            try:
+                resp = self.get(page_url, timeout=12, retries=2)
+                m = re.search(r'"externalId":"([A-Za-z0-9_-]+)"', resp.text)
+                if not m:
+                    m = re.search(r'"browseId":"(UC[A-Za-z0-9_-]+)"', resp.text)
+                if m:
+                    channel_id = m.group(1)
+            except Exception:
+                return []
+
+        if not channel_id:
+            return []
+
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        try:
+            response = self.get(feed_url, timeout=12, retries=2)
+            parser = NativeRSSScraper()
+            items = parser.parse_rss_xml(response.text, "youtube")
+            if items:
+                print(f"    ✓ YouTube Atom feed fallback: {len(items)} items")
+            return items
+        except Exception:
+            return []
 
     def extract_channel_id(self, url: str) -> Optional[str]:
         """Extract @handle or channel path from YouTube URL"""
@@ -311,8 +355,14 @@ class YouTubeScraper(BaseScraper):
             )
 
             if result.returncode != 0:
-                self.last_error = result.stderr[:200] or "yt-dlp returned non-zero status"
-                print(f"    ⚠️  yt-dlp error: {result.stderr[:200]}")
+                err_text = result.stderr[:200] or "yt-dlp returned non-zero status"
+                print(f"    ⚠️  yt-dlp error: {err_text}")
+                # Fallback to native Atom feed
+                fallback = self._fetch_via_atom_feed(channel_ref)
+                if fallback:
+                    self.last_error = None
+                    return fallback
+                self.last_error = err_text
                 return []
 
             items = []
@@ -363,14 +413,26 @@ class YouTubeScraper(BaseScraper):
         except subprocess.TimeoutExpired:
             self.last_error = "yt-dlp timed out"
             print(f"    ❌ yt-dlp timed out ({ytdlp_timeout}s)")
+            fallback = self._fetch_via_atom_feed(channel_ref)
+            if fallback:
+                self.last_error = None
+                return fallback
             return []
         except FileNotFoundError:
             self.last_error = "yt-dlp not found"
             print("    ❌ yt-dlp not found. Install: pip install yt-dlp")
+            fallback = self._fetch_via_atom_feed(channel_ref)
+            if fallback:
+                self.last_error = None
+                return fallback
             return []
         except Exception as e:
             self.last_error = str(e)
             print(f"    ❌ YouTube fetch error: {e}")
+            fallback = self._fetch_via_atom_feed(channel_ref)
+            if fallback:
+                self.last_error = None
+                return fallback
             return []
 
 
