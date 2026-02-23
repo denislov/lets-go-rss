@@ -23,6 +23,7 @@ class MarkdownReportGenerator:
             "behance": "🎨",
             "douyin": "🎵",
             "twitter": "🐦",
+            "zsxq": "⭐",
         }
 
     def generate_update_report(self, new_items: List[Dict[str, Any]],

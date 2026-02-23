@@ -955,6 +955,185 @@ class TwitterScraper(BaseScraper):
 
 
 # ============================================================
+#  Tier 1d: 知识星球 via pub-api (zero config)
+# ============================================================
+
+class ZsxqScraper(BaseScraper):
+    """知识星球 scraper — uses the public API (no auth needed for public groups).
+
+    Primary:  pub-api.zsxq.com/v2/groups/{id} (zero config)
+    Fallback: RSSHub /zsxq/group/{id} (requires ZSXQ_ACCESS_TOKEN in RSSHub)
+    """
+
+    PUB_API = "https://pub-api.zsxq.com/v2/groups/{group_id}"
+    RSSHUB_BASE = os.environ.get("RSSHUB_BASE_URL", "http://localhost:1200")
+
+    def extract_user_id(self, url: str) -> Optional[str]:
+        """Extract group_id from various zsxq URL formats."""
+        # Direct group_id in URL: wx.zsxq.com/group/123 or m.zsxq.com/groups/123
+        match = re.search(r'zsxq\.com(?:/dweb2/index)?/groups?/(\d+)', url)
+        if match:
+            return match.group(1)
+
+        # Short link: t.zsxq.com/xxxxx — need to follow redirect
+        if 't.zsxq.com' in url:
+            return self._resolve_short_link(url)
+
+        # group_id as query parameter
+        match = re.search(r'group_id=(\d+)', url)
+        if match:
+            return match.group(1)
+
+        return None
+
+    def _resolve_short_link(self, url: str) -> Optional[str]:
+        """Follow t.zsxq.com short link to extract group_id."""
+        try:
+            response = self.get(url, timeout=10)
+            # Check final URL for group_id
+            final_url = str(response.url) if hasattr(response, 'url') else ''
+            match = re.search(r'/groups?/(\d+)', final_url)
+            if match:
+                return match.group(1)
+            # Also search in page HTML
+            match = re.search(r'/groups?/(\d{10,})', response.text)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            print(f"    ⚠️  Cannot resolve zsxq short link: {e}")
+        return None
+
+    def fetch_items(self, url: str) -> List[Dict[str, Any]]:
+        self.last_error = None
+        group_id = self.extract_user_id(url)
+        if not group_id:
+            self.last_error = f"Cannot extract 知识星球 group_id from {url}"
+            return []
+
+        # Try public API first (zero config)
+        items = self._fetch_via_pub_api(group_id)
+        if items:
+            return items
+
+        # Fallback: RSSHub (needs ZSXQ_ACCESS_TOKEN configured)
+        return self._fetch_via_rsshub(group_id)
+
+    def _fetch_via_pub_api(self, group_id: str) -> List[Dict[str, Any]]:
+        """Fetch topics from the public 知识星球 API."""
+        api_url = self.PUB_API.format(group_id=group_id)
+        print(f"    📡 知识星球 pub-api: group/{group_id}")
+
+        try:
+            response = self.get(
+                api_url,
+                timeout=10,
+                headers={
+                    "Origin": "https://wx.zsxq.com",
+                    "Referer": "https://wx.zsxq.com/",
+                }
+            )
+            data = response.json()
+
+            if not data.get("succeeded"):
+                self.last_error = data.get("info", "API returned failure")
+                return []
+
+            resp = data.get("resp_data", {})
+            group = resp.get("group", {})
+            group_name = group.get("name", "")
+            topics = resp.get("topics", [])
+
+            if not topics:
+                print("    ⚠️  No topics in pub-api response")
+                self.last_error = "Empty topics from pub-api"
+                return []
+
+            items = []
+            for topic in topics[:20]:
+                topic_id = str(topic.get("topic_id", ""))
+                if not topic_id:
+                    continue
+
+                # Extract text from talk/question/answer
+                talk = topic.get("talk", {})
+                question = topic.get("question", {})
+                text = ""
+                if talk:
+                    text = talk.get("text", "")
+                elif question:
+                    text = question.get("text", "")
+
+                title = topic.get("title", "") or text[:120]
+                if not title:
+                    title = f"知识星球主题 #{topic_id[-6:]}"
+
+                # Clean title
+                title = title.replace("\n", " ").strip()
+                if len(title) > 120:
+                    title = title[:120] + "..."
+
+                # Parse create_time
+                pub_date = ""
+                create_time = topic.get("create_time", "")
+                if create_time:
+                    try:
+                        dt = datetime.fromisoformat(create_time)
+                        pub_date = dt.isoformat()
+                    except ValueError:
+                        pass
+
+                link = f"https://wx.zsxq.com/topic/{topic_id}"
+                item_id = f"zsxq_{hashlib.md5(topic_id.encode()).hexdigest()[:12]}"
+
+                # Author
+                author = ""
+                owner = (talk or question).get("owner", {})
+                if owner:
+                    author = owner.get("name", "")
+
+                items.append({
+                    "item_id": item_id,
+                    "title": title,
+                    "description": text[:500] if text else "",
+                    "link": link,
+                    "pub_date": pub_date,
+                    "metadata": {
+                        "_channel_title": group_name,
+                        "topic_id": topic_id,
+                        "author": author,
+                        "likes_count": topic.get("likes_count", 0),
+                    }
+                })
+
+            if items:
+                print(f"    ✓ 知识星球: {len(items)} topics via pub-api")
+            return items
+
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"    ⚠️  知识星球 pub-api failed: {e}")
+            return []
+
+    def _fetch_via_rsshub(self, group_id: str) -> List[Dict[str, Any]]:
+        """Fallback: fetch via RSSHub (requires ZSXQ_ACCESS_TOKEN)."""
+        rsshub_url = f"{self.RSSHUB_BASE}/zsxq/group/{group_id}"
+        print(f"    📡 RSSHub fallback: {rsshub_url}")
+        try:
+            response = self.get(rsshub_url, timeout=10)
+            ct = response.headers.get("content-type", "")
+            if "xml" in ct or "rss" in ct:
+                parser = NativeRSSScraper()
+                return parser.parse_rss_xml(response.text, "zsxq")
+            else:
+                self.last_error = f"Non-RSS from RSSHub (HTTP {response.status_code})"
+                return []
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"    ❌ RSSHub fallback also failed: {e}")
+            return []
+
+
+# ============================================================
 
 class ScraperFactory:
     """Factory to get appropriate scraper for a platform"""
@@ -980,6 +1159,8 @@ class ScraperFactory:
             return "douyin"
         elif "x.com" in url_lower or "twitter.com" in url_lower:
             return "twitter"
+        elif "zsxq.com" in url_lower:
+            return "zsxq"
         else:
             return "unknown"
 
@@ -995,6 +1176,7 @@ class ScraperFactory:
             "behance": BehanceScraper,
             "douyin": DouyinScraper,
             "twitter": TwitterScraper,
+            "zsxq": ZsxqScraper,
         }
 
         scraper_class = scrapers.get(platform.lower())
