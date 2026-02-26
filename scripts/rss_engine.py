@@ -18,6 +18,7 @@ from scrapers import ScraperFactory
 from classifier import get_classifier
 from rss_generator import RSSGenerator, OPMLGenerator
 from report_generator import MarkdownReportGenerator
+import click
 
 
 @contextmanager
@@ -28,6 +29,7 @@ def update_lock(lock_path: str):
         lock_file = open(lock_path, "a+", encoding="utf-8")
         try:
             import fcntl  # Unix only
+
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError(f"Another update is already running (lock: {lock_path})")
@@ -44,6 +46,7 @@ def update_lock(lock_path: str):
         if lock_file:
             try:
                 import fcntl
+
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             except Exception:
                 pass
@@ -68,16 +71,18 @@ class RSSEngine:
             self._classifier = get_classifier(self._use_llm)
         return self._classifier
 
-    def add_subscription(self, url: str) -> bool:
+    def add_subscription(self, url: str,  platform: str) -> bool:
         """Add a new subscription"""
         print(f"\n🔍 Analyzing URL: {url}")
 
         # Detect platform
-        platform = self.scraper_factory.detect_platform(url)
+        platform = platform if platform else self.scraper_factory.detect_platform(url)
 
         if platform == "unknown":
             print("❌ Error: Unsupported platform")
-            print("Supported platforms: Bilibili, Xiaohongshu, Weibo, YouTube, Vimeo, Behance, Douyin")
+            print(
+                "Supported platforms: Bilibili, Xiaohongshu, Weibo, YouTube, Vimeo, Behance, Douyin"
+            )
             return False
 
         print(f"✓ Detected platform: {platform.title()}")
@@ -87,13 +92,13 @@ class RSSEngine:
             url=url,
             platform=platform,
             title=f"{platform.title()} Subscription",
-            description=f"Content from {platform}"
+            description=f"Content from {platform}",
         )
 
         print(f"✓ Subscription added with ID: {subscription_id}")
 
         # Try to fetch initial content
-        print(f"\n📥 Fetching initial content...")
+        print("\n📥 Fetching initial content...")
         initial_fetch_ok = True
         try:
             self._fetch_subscription(subscription_id, url, platform)
@@ -105,13 +110,19 @@ class RSSEngine:
             print("\n✅ Subscription added successfully!")
             return True
         else:
-            print("\n⚠️  Subscription added, but initial fetch failed. Will retry on next update.")
+            print(
+                "\n⚠️  Subscription added, but initial fetch failed. Will retry on next update."
+            )
             return True
 
-    def update_all(self, use_classification: bool = True, digest: bool = False) -> Dict[str, Any]:
+    def update_all(
+        self, use_classification: bool = True, digest: bool = False
+    ) -> Dict[str, Any]:
         """Update all subscriptions in parallel."""
         started_at = datetime.now()
-        print(f"\n🔄 Starting RSS update... [{started_at.strftime('%Y-%m-%d %H:%M:%S')}]")
+        print(
+            f"\n🔄 Starting RSS update... [{started_at.strftime('%Y-%m-%d %H:%M:%S')}]"
+        )
 
         subscriptions = self.db.get_subscriptions()
 
@@ -136,7 +147,10 @@ class RSSEngine:
             for sub in subscriptions:
                 future = executor.submit(
                     self._fetch_subscription,
-                    sub["id"], sub["url"], sub["platform"], use_classification
+                    sub["id"],
+                    sub["url"],
+                    sub["platform"],
+                    use_classification,
                 )
                 future_to_sub[future] = sub
 
@@ -158,18 +172,22 @@ class RSSEngine:
                     err_msg = str(e)
                     results[sub["id"]] = (0, err_msg)
                     print(f"  ❌ {platform}: {err_msg[:80]}")
-                    error_rows.append({
-                        "platform": sub["platform"],
-                        "url": sub["url"],
-                        "error": err_msg,
-                    })
+                    error_rows.append(
+                        {
+                            "platform": sub["platform"],
+                            "url": sub["url"],
+                            "error": err_msg,
+                        }
+                    )
 
         elapsed = time.time() - t0
         total_new = sum(r[0] for r in results.values())
         errors = sum(1 for r in results.values() if r[1])
         ended_at = datetime.now()
         print(f"\n✅ Done in {elapsed:.1f}s | +{total_new} new | {errors} errors")
-        print(f"🕒 Window: {started_at.strftime('%H:%M:%S')} -> {ended_at.strftime('%H:%M:%S')}\n")
+        print(
+            f"🕒 Window: {started_at.strftime('%H:%M:%S')} -> {ended_at.strftime('%H:%M:%S')}\n"
+        )
         if error_rows:
             print("⚠️  Error summary:")
             for row in error_rows:
@@ -196,20 +214,29 @@ class RSSEngine:
         else:
             # Full mode: show only items fetched in this update cycle
             report_items = self.db.get_new_items_since(update_start)
-        self.report_generator.generate_update_report(report_items, os.path.join(out_dir, "latest_update.md"), digest=digest)
+        self.report_generator.generate_update_report(
+            report_items, os.path.join(out_dir, "latest_update.md"), digest=digest
+        )
         print("✓ latest_update.md")
 
-        self.report_generator.generate_summary_report(self.db, os.path.join(out_dir, "summary.md"))
+        self.report_generator.generate_summary_report(
+            self.db, os.path.join(out_dir, "summary.md")
+        )
         print("✓ summary.md")
 
         return {
             "new_items": all_new_items,
             "total_subscriptions": len(subscriptions),
-            "feed_paths": feed_paths
+            "feed_paths": feed_paths,
         }
 
-    def _fetch_subscription(self, subscription_id: int, url: str, platform: str,
-                           use_classification: bool = True) -> List[Dict[str, Any]]:
+    def _fetch_subscription(
+        self,
+        subscription_id: int,
+        url: str,
+        platform: str,
+        use_classification: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Fetch content from a subscription"""
 
         # Get scraper
@@ -229,14 +256,17 @@ class RSSEngine:
 
         # Auto-update subscription title from feed channel name
         first_meta = items[0].get("metadata", {}) or {}
-        channel_name = first_meta.get("_channel_title") or first_meta.get("channel") or ""
+        channel_name = (
+            first_meta.get("_channel_title") or first_meta.get("channel") or ""
+        )
         if channel_name:
             # Clean up platform-specific suffixes
             import re as _re
-            channel_name = _re.sub(r'\s*的\s*bilibili\s*空间$', '', channel_name)
-            channel_name = _re.sub(r'\s*的微博$', '', channel_name)
-            channel_name = _re.sub(r'^Vimeo\s*/\s*', '', channel_name)
-            channel_name = _re.sub(r"['\u2019]s\s*videos$", '', channel_name)
+
+            channel_name = _re.sub(r"\s*的\s*bilibili\s*空间$", "", channel_name)
+            channel_name = _re.sub(r"\s*的微博$", "", channel_name)
+            channel_name = _re.sub(r"^Vimeo\s*/\s*", "", channel_name)
+            channel_name = _re.sub(r"['\u2019]s\s*videos$", "", channel_name)
             channel_name = channel_name.strip()
         if channel_name:
             self.db.update_subscription_title(subscription_id, channel_name)
@@ -258,8 +288,7 @@ class RSSEngine:
             if use_classification:
                 try:
                     category = self.classifier.classify_item(
-                        item.get("title", ""),
-                        item.get("description", "")
+                        item.get("title", ""), item.get("description", "")
                     )
                     item["category"] = category
                 except Exception as e:
@@ -274,7 +303,7 @@ class RSSEngine:
                 link=item.get("link", ""),
                 category=item.get("category", "其他"),
                 pub_date=item.get("pub_date"),
-                metadata=item.get("metadata")
+                metadata=item.get("metadata"),
             )
 
             if added:
@@ -319,78 +348,17 @@ class RSSEngine:
         for cat, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
             print(f"  {cat}: {count}")
 
-
-def main(db_path: str = None):
-    """Main CLI entry point"""
-
-    parser = argparse.ArgumentParser(
-        description="Universal RSS Engine - AI-powered content aggregator",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Add a subscription
-  python rss_engine.py --add "https://space.bilibili.com/123456"
-
-  # Update all subscriptions
-  python rss_engine.py --update
-
-  # Update without LLM classification
-  python rss_engine.py --update --no-llm
-
-  # List subscriptions
-  python rss_engine.py --list
-
-  # Show statistics
-  python rss_engine.py --stats
-        """
-    )
-
-    parser.add_argument("--add", metavar="URL", help="Add a new subscription")
-    parser.add_argument("--update", action="store_true", help="Update all subscriptions")
-    parser.add_argument("--status", action="store_true", help="Read cached report (for bot push, no fetching)")
-    parser.add_argument("--list", action="store_true", help="List all subscriptions")
-    parser.add_argument("--stats", action="store_true", help="Show statistics")
-    parser.add_argument("--no-llm", action="store_true", help="Disable LLM classification")
-    parser.add_argument("--digest", action="store_true", help="Digest mode: show only latest 1 item per account")
-    parser.add_argument("--db", default="rss_database.db", help="Database path (default: rss_database.db)")
-
-    args = parser.parse_args()
-
-    # Check if any action specified
-    if not any([args.add, args.update, args.status, args.list, args.stats]):
-        parser.print_help()
-        return
-
-    # --status is a fast path: just read cached file, no engine needed
-    if args.status:
-        report_path = os.path.join(os.path.dirname(db_path or args.db) or ".", "latest_update.md")
-        if os.path.exists(report_path):
-            with open(report_path, "r", encoding="utf-8") as f:
-                print(f.read())
-        else:
-            print("⚠️ 尚无缓存报告。请先运行 --update 生成。")
-        return
-
-    # Initialize engine
-    use_llm = not args.no_llm
-    actual_db_path = db_path or args.db
-    engine = RSSEngine(db_path=actual_db_path, use_llm=use_llm)
-
+@click.command("stats", help="Show statistics")
+@click.option(
+    "--db", default="rss_database.db", help="Database path", show_default=True
+)
+@click.pass_obj
+def stats(obj, db):
+    actual_db_path = obj["db_path"] or db
+    engine = RSSEngine(db_path=actual_db_path, use_llm=False)
     # Execute actions
     try:
-        if args.add:
-            engine.add_subscription(args.add)
-
-        if args.update:
-            lock_path = os.path.join(os.path.dirname(actual_db_path) or ".", ".update.lock")
-            with update_lock(lock_path):
-                engine.update_all(use_classification=use_llm, digest=args.digest)
-
-        if args.list:
-            engine.list_subscriptions()
-
-        if args.stats:
-            engine.show_stats()
+        engine.show_stats()
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Operation cancelled by user")
@@ -403,5 +371,83 @@ Examples:
         sys.exit(1)
 
 
-if __name__ == "__main__":
-    main()
+@click.command("list", help="List all subscriptions")
+@click.option(
+    "--db", default="rss_database.db", help="Database path", show_default=True
+)
+@click.pass_obj
+def list_sub(obj, db):
+    actual_db_path = obj["db_path"] or db
+    engine = RSSEngine(db_path=actual_db_path, use_llm=False)
+    # Execute actions
+    try:
+        engine.list_subscriptions()
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Operation cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        if "Another update is already running" in str(e):
+            print(f"\n⚠️  {e}")
+            return
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
+
+
+@click.command("add")
+@click.option(
+    "--db", default="rss_database.db", help="Database path", show_default=True
+)
+@click.option("--platform", help="Mannaul set url platform")
+@click.argument("url", type=str)
+@click.pass_obj
+def add(obj, db, platform, url):
+    """
+    Add a new subscription\n
+    Examples: python rss_engine.py --add "https://space.bilibili.com/123456"
+    """
+    actual_db_path = obj["db_path"] or db
+    engine = RSSEngine(db_path=actual_db_path, use_llm=False)
+    # Execute actions
+    try:
+        engine.add_subscription(url, platform)
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Operation cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        if "Another update is already running" in str(e):
+            print(f"\n⚠️  {e}")
+            return
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
+
+
+@click.command("update", help="Update all subscriptions")
+@click.option("--no-llm", is_flag=True, help="dont use llm to summarize")
+@click.option(
+    "--digest", is_flag=True, help="Digest mode: show only latest 1 item per account"
+)
+@click.option(
+    "--db", default="rss_database.db", help="Database path", show_default=True
+)
+@click.pass_obj
+def update(obj, no_llm, digest, db):
+    actual_db_path = obj["db_path"] or db
+    engine = RSSEngine(db_path=actual_db_path, use_llm=not no_llm)
+
+    # Execute actions
+    try:
+        lock_path = os.path.join(os.path.dirname(actual_db_path) or ".", ".update.lock")
+        with update_lock(lock_path):
+            engine.update_all(use_classification=not no_llm, digest=digest)
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Operation cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        if "Another update is already running" in str(e):
+            print(f"\n⚠️  {e}")
+            return
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
+    pass

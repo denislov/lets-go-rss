@@ -1,0 +1,16 @@
+[project]
+name = "lets-go-rss"
+version = "0.1.0"
+description = "Let's Go RSS 🛰️ 全平台 RSS 订阅管理器"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    'httpx>=0.27.0',
+    'yt-dlp',
+    'python-dateutil',
+    "click>=8.3.1",
+]
+
+[[tool.uv.index]]
+url = 'https://pypi.tuna.tsinghua.edu.cn/simple/'
+default = true

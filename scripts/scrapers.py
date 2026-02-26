@@ -87,6 +87,7 @@ class NativeRSSScraper(BaseScraper):
             entries = root.findall(f"{{{atom_ns}}}entry")
             for entry in entries[:20]:
                 title_el = entry.find(f"{{{atom_ns}}}title")
+                id_el = entry.find(f"{{{atom_ns}}}id")
                 link_el = entry.find(f"{{{atom_ns}}}link")
                 published_el = entry.find(f"{{{atom_ns}}}published")
                 updated_el = entry.find(f"{{{atom_ns}}}updated")
@@ -97,8 +98,8 @@ class NativeRSSScraper(BaseScraper):
                 pub_date = (published_el.text if published_el is not None
                            else updated_el.text if updated_el is not None else "")
                 description = summary_el.text if summary_el is not None and summary_el.text else ""
-
-                item_id = f"{platform}_{hashlib.md5(link.encode()).hexdigest()[:12]}"
+                
+                item_id = id_el.text if id_el is not None else f"{platform}_{hashlib.md5(link.encode()).hexdigest()[:12]}"
                 items.append({
                     "item_id": item_id,
                     "title": title.strip(),
@@ -118,6 +119,7 @@ class NativeRSSScraper(BaseScraper):
             item_elements = channel.findall("item") if channel is not None else root.findall(".//item")
 
             for item_el in item_elements[:20]:
+                id_el = item_el.find("id")
                 title_el = item_el.find("title")
                 link_el = item_el.find("link")
                 desc_el = item_el.find("description")
@@ -133,7 +135,7 @@ class NativeRSSScraper(BaseScraper):
                 # Strip HTML tags from description for cleaner text
                 clean_desc = re.sub(r'<[^>]+>', '', description)[:500]
 
-                item_id = f"{platform}_{hashlib.md5(guid.encode()).hexdigest()[:12]}"
+                item_id = id_el.text if id_el is not None else f"{platform}_{hashlib.md5(guid.encode()).hexdigest()[:12]}"
                 items.append({
                     "item_id": item_id,
                     "title": title.strip(),
@@ -144,7 +146,20 @@ class NativeRSSScraper(BaseScraper):
                 })
 
         return items
+    
 
+class MPScraper(NativeRSSScraper):
+    
+    def fetch_items(self, url: str):
+        print(f"    📡 MP Native RSS: {url}")
+
+        try:
+            response = self.get(url)
+            return self.parse_rss_xml(response.text, "mp")
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"    ❌ Native RSS fetch failed: {e}")
+            return []
 
 class RSSHubScraper(NativeRSSScraper):
     """Base class for scrapers that fetch via self-hosted RSSHub"""
@@ -1177,6 +1192,7 @@ class ScraperFactory:
             "douyin": DouyinScraper,
             "twitter": TwitterScraper,
             "zsxq": ZsxqScraper,
+            "mp": MPScraper,
         }
 
         scraper_class = scrapers.get(platform.lower())
