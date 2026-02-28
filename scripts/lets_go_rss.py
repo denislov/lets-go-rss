@@ -11,6 +11,7 @@ from typing import Any, Dict
 import click
 
 from rss_engine import add, list_sub, stats, update
+from mp_tool import mp_tool
 
 if sys.platform == "win32":
     try:
@@ -72,5 +73,6 @@ cli.add_command(list_sub)
 cli.add_command(add)
 cli.add_command(stats)
 cli.add_command(update)
+cli.add_command(mp_tool)
 if __name__ == "__main__":
     cli()

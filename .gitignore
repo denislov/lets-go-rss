@@ -1,11 +1,5 @@
 # Runtime generated files
-assets/rss_database.db
-assets/rss_database.db-shm
-assets/rss_database.db-wal
-assets/*.xml
-assets/*.md
-assets/subscriptions.opml
-assets/.update.lock
+assets/
 *.xml
 *.opml
 latest_update.md

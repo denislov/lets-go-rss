@@ -1,6 +1,6 @@
 ---
 name: lets-go-rss
-description: 轻量级全平台 RSS 订阅管理器。一键聚合 YouTube、Vimeo、Behance、Twitter/X、知识星球、B站、微博、抖音、小红书的内容更新，支持增量去重和 AI 智能分类。
+description: 轻量级全平台 RSS 订阅管理器。一键聚合 YouTube、Vimeo、Behance、Twitter/X、知识星球、B站、微博、抖音、小红书、微信公众号的内容更新，支持增量去重和 AI 智能分类。
 ---
 
 # Let's Go RSS
@@ -11,9 +11,19 @@ description: 轻量级全平台 RSS 订阅管理器。一键聚合 YouTube、Vim
 
 ### 添加订阅
 ```bash
-uv run scripts/lets_go_rss.py add "https://www.youtube.com/@MatthewEncina"
-uv run scripts/lets_go_rss.py add "https://vimeo.com/xkstudio" --platfrom mp
+uv run scripts/lets_go_rss.py add "https://www.youtube.com/@MatthewEncina" --platform youtube
 ```
+add command help:
+Usage: lets_go_rss.py add [OPTIONS] URL
+
+  Add a new subscription
+
+  Examples: python rss_engine.py --add "https://space.bilibili.com/123456"
+
+Options:
+  --db TEXT        Database path  [default: rss_database.db]
+  --platform TEXT  Mannaul set url platform [support platforms: bilibili,xiaohongshu,weibo,youtube,vimeo,behance,douyin,twitter,zsxq,mp]
+  -h, --help       Show this message and exit.
 
 ### 更新全部（耗时操作，建议用 crontab 后台跑）
 ```bash
@@ -30,6 +40,22 @@ uv run scripts/lets_go_rss.py status
 uv run scripts/lets_go_rss.py list
 uv run scripts/lets_go_rss.py stats
 ```
+
+## 微信公众号文章可根据id获取文章内容
+```bash
+uv run scripts/lets_go_rss.py mp-tool --id 3226363426-2247719943_1
+```
+mp-tool help 信息:
+
+Usage: lets_go_rss.py mp-tool [OPTIONS]
+
+  mp rss tool
+
+Options:
+  --id TEXT          MP rss tool collections
+  --output-dir TEXT  The article save path
+  --stdout           Wether output to stdout
+  -h, --help         Show this message and exit.
 
 ## Bot 推送最佳实践
 
