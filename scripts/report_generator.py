@@ -127,6 +127,11 @@ class MarkdownReportGenerator:
             lines.append(f"{tag}{emoji} {name}{date_suffix}")
 
             # Title as clickable hyperlink
+            article_id = item.get("item_id")
+            if article_id:
+                lines.append(
+                    f"   article_id: {article_id}"
+                )
             if link:
                 lines.append(f"   [{title}]({link})")
             else:
@@ -247,6 +252,11 @@ class MarkdownReportGenerator:
             lines.append(f"### {emoji} {title}")
 
         lines.append("")
+        article_id = item.get("item_id")
+        if article_id:
+            lines.append(
+                f"   article_id: {article_id}"
+            )
 
         # Description
         description = item.get("description", "")
@@ -271,7 +281,7 @@ class MarkdownReportGenerator:
                     dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
                     formatted_date = dt.strftime("%Y-%m-%d %H:%M")
                     metadata_parts.append(f"**发布时间**: {formatted_date}")
-            except:
+            except Exception:
                 pass
 
         if metadata_parts:

@@ -403,8 +403,7 @@ def list_sub(obj, db):
 @click.pass_obj
 def add(obj, db, platform, url):
     """
-    Add a new subscription\n
-    Examples: python rss_engine.py --add "https://space.bilibili.com/123456"
+    Add a new subscription
     """
     actual_db_path = obj["db_path"] or db
     engine = RSSEngine(db_path=actual_db_path, use_llm=False)
